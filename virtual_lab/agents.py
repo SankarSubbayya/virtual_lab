@@ -39,8 +39,8 @@ SCOPE_PROMPT = """Classify this question for a cancer research lab.
 - "patient_care": asks what to do for a specific patient (treatment, dosing, diagnosis, prognosis).
 - "off_topic": not about biomedical research.
 For "research", set research_question to the question, lightly cleaned. For "patient_care", rewrite it \
-as the closest research question a cohort analysis plus literature could answer, with no advice for \
-the individual. For "off_topic", repeat it.
+as the closest research question about associations or outcomes in a patient population that a cohort \
+analysis plus literature could answer. It must not ask which treatment is best or what to do for anyone. For "off_topic", repeat it.
 
 Question: {question}"""
 
