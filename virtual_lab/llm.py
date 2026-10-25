@@ -6,7 +6,7 @@ import time
 
 from google import genai
 
-from .config import ARGON, GEMMA
+from .config import ARGON, FLASH, GEMMA
 from .notebook import Run
 
 _client: genai.Client | None = None
@@ -29,7 +29,7 @@ def usage_of(interaction) -> tuple[int, int]:
 
 async def ask(run: Run, agent: str, model: str, prompt: str, *, lane: str = "Pipeline", system: str | None = None,
               thinking: str | None = None, schema: dict | None = None, tools: list | None = None,
-              timeout: float = 240, retries: int = 2, show: bool = True):
+              timeout: float = 240, retries: int = 2, show: bool | str = True):
     """Run one agent turn. Returns text, a dict when `schema` is given, or None if every attempt failed."""
     run.emit("agent_start", agent=agent, lane=lane, model=model)
     kwargs: dict = {"model": model, "input": prompt}
@@ -38,7 +38,9 @@ async def ask(run: Run, agent: str, model: str, prompt: str, *, lane: str = "Pip
             kwargs["input"] = f"{system}\n\n{prompt}"
         else:
             kwargs["system_instruction"] = system
-    if thinking and model == ARGON:
+    if model == FLASH and thinking is None and run.mode == "fast":
+        thinking = "low"  # Flash's default thinking doubles latency for little gain on these short turns
+    if thinking and model in (ARGON, FLASH):
         kwargs["generation_config"] = {"thinking_level": thinking}
     if schema:
         kwargs["response_format"] = {"type": "text", "mime_type": "application/json", "schema": schema}
@@ -66,7 +68,7 @@ async def ask(run: Run, agent: str, model: str, prompt: str, *, lane: str = "Pip
     tin, tout = usage_of(interaction)
     run.add_usage(tin, tout)
     run.emit("agent_output", agent=agent, lane=lane, model=model,
-             text=render(result) if show else "(sealed until the blind test)",
+             text=render(result) if show is True else (show or "(sealed until the blind test)"),
              data=result if isinstance(result, dict) else {}, ms=int((time.time() - start) * 1000), tokens=tin + tout)
     return result
 

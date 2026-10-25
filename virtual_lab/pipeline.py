@@ -280,7 +280,7 @@ async def run_lab(run: Run, auto_approve: bool = False):
     dictionary = DATA_DICT.read_text()
 
     # 1. Getting started
-    run.stage("1 · Getting started")
+    run.stage("Getting started")
     run.set("original_request", run.question)
     run.emit("agent_output", agent="CaptureOriginalRequest", text=f"Saved the exact question:\n\n> {run.question}")
     sandbox_ready = asyncio.create_task(sandbox.ensure(run))
@@ -301,25 +301,25 @@ async def run_lab(run: Run, auto_approve: bool = False):
         question=question, dictionary=dictionary), thinking="medium", show=False))
 
     # 2-3. School and fact-checking
-    run.stage("2 · Readiness check and school")
+    run.stage("Readiness check and school")
     lessons = await ready_team(run, question)
-    run.stage("3 · Fact-checking")
+    run.stage("Fact-checking")
     evidence = await fact_check(run, question, dictionary)
     knowledge = f"{lessons}\n\n{evidence}"
     draft_checked = asyncio.create_task(check_draft(run, evidence, initial))
 
     # 4. Planning meetings
-    run.stage("4 · Planning meetings (three teams in parallel)")
+    run.stage("Planning meetings (three teams in parallel)")
     plans = await asyncio.gather(*(planning_track(run, t, question, knowledge, dictionary) for t in A.TRACKS))
     merged = "\n\n".join(f"=== Plan from Track {t} ===\n{p}" for t, p in zip(A.TRACKS, plans) if p)
     for t in A.TRACKS:
         run.handoff(f"PI_{t}", "PI_Aggregator", f"plan_{t}")
     plan = await ask(run, "PI_Aggregator", ARGON, A.AGGREGATOR_PROMPT.format(
-        question=question, plans=merged, dictionary=dictionary), system=A.LAB_RULES,
+        question=question, plans=merged, dictionary=dictionary, scope=cfg["plan_scope"]), system=A.LAB_RULES,
         thinking="medium" if run.mode == "full" else "low")
 
     # 5. Checks and approval
-    run.stage("5 · Checks and approval")
+    run.stage("Checks and approval")
     plan = await check_feasibility(run, plan, dictionary)
     run.set("final_plan", plan)
     team = asyncio.create_task(ask(run, "TeamFormationAgent", FLASH, A.TEAM_PROMPT.format(plan=plan), schema=A.TEAM_SCHEMA))
@@ -332,7 +332,7 @@ async def run_lab(run: Run, auto_approve: bool = False):
         return
 
     # 6. Doing the work
-    run.stage("6 · Doing the work")
+    run.stage("Doing the work")
     experts = "; ".join(f"{e['role']} ({e['focus']})" for e in ((await team) or {}).get("experts", [])) or "Survival Analyst"
     env_id = await sandbox_ready
     files = await sandbox.execute(run, plan, experts, EXECUTOR_TOKEN_CAP, env_id) if env_id else {}
@@ -350,7 +350,7 @@ async def run_lab(run: Run, auto_approve: bool = False):
     answer = await ask(run, "ExecutionSynthesisAgent", ARGON, synth_prompt(), system=A.LAB_RULES, thinking="medium")
 
     # 7. The blind test
-    run.stage("7 · Blind test against Argon alone")
+    run.stage("Blind test against Argon alone")
     sealed = await baseline or ""
     run.emit("agent_output", agent="BaselineAnswer", lane="Judge", text=sealed)
     winners = await blind_test(run, question, answer, sealed)

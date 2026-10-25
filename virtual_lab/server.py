@@ -1,4 +1,4 @@
-"""Live page server: uv run uvicorn virtual_lab.server:app --port 8000"""
+"""Live page server: uv run uvicorn virtual_lab.server:app --port 8010"""
 
 import asyncio
 import json

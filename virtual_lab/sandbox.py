@@ -2,18 +2,20 @@
 
 import asyncio
 import json
+import re
 import time
 from datetime import datetime, timedelta
 
 from . import agents
 from .config import (ANTIGRAVITY, ARGON, CACHE_DIR, DATA_CSV, DATA_DICT, FLASH, SANDBOX_DATA, SANDBOX_DICT,
                      SANDBOX_OUT)
-from .llm import client, usage_of
+from .llm import ask, client, usage_of
 from .notebook import Run
 
 ENV_CACHE = CACHE_DIR / "sandbox.json"
 ENV_MAX_AGE = timedelta(days=6)  # environments are kept for 7 days after last use
 OUTPUTS = ["results.json", "summary.md", "km.png", "analysis.py"]
+SCRIPT = "/workspace/run/analysis.py"  # fast mode: written by Argon, uploaded, run by the agent
 
 SETUP_PROMPT = f"""Run this shell command and reply with only the last line it prints:
 pip install -q --break-system-packages lifelines matplotlib pandas && mkdir -p {SANDBOX_OUT} && \
@@ -60,9 +62,38 @@ async def create(run: Run) -> str | None:
 
 
 async def execute(run: Run, plan: str, experts: str, max_tokens: int, env_id: str) -> dict:
-    """Run the approved plan in the sandbox; stream each code step to the live page; download outputs."""
+    """Run the approved plan in the sandbox and download the outputs.
+
+    Fast mode: Argon writes analysis.py in one call, we upload it, and the sandbox agent runs it (fixing
+    only if it fails). Full mode: the sandbox agent on Argon writes, runs and iterates on its own.
+    """
+    if run.mode == "fast":
+        reply = await ask(run, "ExecutorCoder", ARGON, agents.CODER_PROMPT.format(
+            experts=experts, plan=plan, data=SANDBOX_DATA, dictionary=DATA_DICT.read_text(), out=SANDBOX_OUT),
+            system=agents.LAB_RULES, thinking="low", lane="Sandbox",
+            show="Wrote `analysis.py` for the sandbox (code below).")
+        code = _python_block(reply or "")
+        if code:
+            run.emit("tool", agent="ExecutorCoder", lane="Sandbox", text=code, data={"kind": "code"})
+            await asyncio.to_thread(client().environments.files.upload, environment=env_id, path=SCRIPT,
+                                    file=code.encode(), overwrite=True)
+            prompt = f"First run `rm -rf {SANDBOX_OUT} && mkdir -p {SANDBOX_OUT}`.\n\n" + agents.RUNNER_PROMPT.format(
+                script=SCRIPT, data=SANDBOX_DATA, out=SANDBOX_OUT)
+            await _agent(run, prompt, max_tokens, env_id)
+            return await download(run, env_id, extra={"analysis.py": SCRIPT})
     prompt = f"First run `rm -rf {SANDBOX_OUT} && mkdir -p {SANDBOX_OUT}`.\n\n" + agents.EXECUTOR_PROMPT.format(
         experts=experts, data=SANDBOX_DATA, dictionary=SANDBOX_DICT, plan=plan, out=SANDBOX_OUT)
+    await _agent(run, prompt, max_tokens, env_id)
+    return await download(run, env_id)
+
+
+def _python_block(text: str) -> str:
+    m = re.search(r"```(?:python)?\n(.*?)```", text, re.S)
+    return (m.group(1) if m else text).strip()
+
+
+async def _agent(run: Run, prompt: str, max_tokens: int, env_id: str):
+    """One Antigravity interaction on Argon, streaming each code step to the live page."""
     run.emit("agent_start", agent="Executor", lane="Sandbox", model=f"{ANTIGRAVITY} · {ARGON}")
     start = time.time()
     final_text, interaction = [], None
@@ -99,22 +130,25 @@ async def execute(run: Run, plan: str, experts: str, max_tokens: int, env_id: st
                 out = s.get("result") or s.get("output") or s.get("content")
                 if out:
                     run.emit("tool", agent="Executor", lane="Sandbox", text=str(out)[:2000], data={"kind": "output"})
-
-    files = await download(run, env_id)
     run.emit("agent_output", agent="Executor", lane="Sandbox", model=f"{ANTIGRAVITY} · {ARGON}",
              text="".join(final_text) or "(no summary)", ms=int((time.time() - start) * 1000), tokens=tokens,
-             data={"status": getattr(interaction, "status", None), "files": list(files)})
-    return files
+             data={"status": getattr(interaction, "status", None)})
 
 
-async def download(run: Run, env_id: str) -> dict[str, str]:
+async def download(run: Run, env_id: str, extra: dict[str, str] | None = None) -> dict[str, str]:
     """Fetch the executor's outputs into runs/<id>/sandbox/ and catalogue them. Returns {name: F-id}."""
     found = {}
-    for name in OUTPUTS:
+    paths = {name: f"{SANDBOX_OUT}/{name}" for name in OUTPUTS} | (extra or {})
+
+    async def fetch(path):
         try:
-            data = await asyncio.to_thread(client().environments.files.download,
-                                           environment=env_id, path=f"{SANDBOX_OUT}/{name}")
+            return await asyncio.to_thread(client().environments.files.download, environment=env_id, path=path)
         except Exception:
+            return None
+
+    blobs = await asyncio.gather(*(fetch(path) for path in paths.values()))
+    for name, data in zip(paths, blobs):
+        if data is None:
             continue
         run.write(f"sandbox/{name}", data)
         found[name] = run.add_source("file", name, f"sandbox/{name}", "Executor")

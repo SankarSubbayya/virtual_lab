@@ -41,7 +41,7 @@ cp .env.example .env                 # add GEMINI_API_KEY (Argon needs a paid ti
 uv sync
 uv run python -m virtual_lab.data    # fetch METABRIC from cBioPortal into data/
 uv run python -m virtual_lab --auto-approve           # CLI, demo question, fast mode
-uv run uvicorn virtual_lab.server:app --port 8000     # live page at http://localhost:8000
+uv run uvicorn virtual_lab.server:app --port 8010     # live page at http://localhost:8010
 ```
 
 `uv run python scripts/smoke_test.py` checks every model and the sandbox. Each run writes

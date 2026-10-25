@@ -24,6 +24,8 @@ SANDBOX_OUT = "/workspace/out"
 
 MODES = {
     # critic rounds per track, school/research live or cached, judge revise loop
-    "fast": {"critic_rounds": 1, "live_school": False, "deep_research": False, "judge_retries": 0},
-    "full": {"critic_rounds": 4, "live_school": True, "deep_research": True, "judge_retries": 2},
+    "fast": {"critic_rounds": 1, "live_school": False, "deep_research": False, "judge_retries": 0,
+             "plan_scope": "one primary analysis and at most one secondary analysis, in under 300 words"},
+    "full": {"critic_rounds": 4, "live_school": True, "deep_research": True, "judge_retries": 2,
+             "plan_scope": "one primary analysis and at most two secondary analyses"},
 }

@@ -3,7 +3,8 @@
 LAB_RULES = """You are a member of the Virtual Lab, a team of AI scientists answering a cancer research \
 question for a researcher. This is research on a public cohort, never patient care: do not give \
 treatment, dosing or diagnostic advice for any individual. Be specific and concise. When you use a \
-catalogued source, cite its ID in square brackets, e.g. [E-001] or [L-001]."""
+catalogued source, cite its ID in square brackets, e.g. [E-001] or [L-001]. Write plain markdown: \
+no LaTeX or $...$ math (write HR, 95% CI, log2, CD8+ as plain text)."""
 
 SPECIALISTS = {
     "Immunologist": "You are the Immunologist. You know which immune cell types and genes matter, which "
@@ -209,7 +210,7 @@ Concerns:
 {concerns}"""
 
 AGGREGATOR_PROMPT = """You are the lead PI. Three tracks each produced a plan. Merge them into one plan \
-the executors will code today: one primary analysis and at most two secondary analyses, using exact \
+the executors will code today: {scope}, using exact \
 column names, runnable in under two minutes on a laptop. Use these headings: Hypothesis, Cohort, \
 Variables, Primary analysis, Secondary analyses, Required outputs, Limitations. Required outputs must \
 include results.json, km.png and analysis.py.
@@ -268,7 +269,32 @@ code to {out}/analysis.py and run it. Save:
 "covariates"}}, "secondary": [same fields], "checks": [strings, e.g. proportional hazards], "notes": string}}
 - {out}/km.png: Kaplan-Meier curves for the primary comparison, labelled, with numbers at risk if easy.
 - {out}/summary.md: at most 150 words on what the data shows, with the numbers.
-Report hazard ratios per the unit stated in the plan. If a step fails, fix it and continue; never invent numbers."""
+Report hazard ratios per the unit stated in the plan. If a step fails, fix it and continue; never invent numbers.
+A researcher is waiting: read the data dictionary instead of exploring the data, write analysis.py in one go \
+(under 150 lines) and run it once; edit and re-run only if it fails."""
+
+CODER_PROMPT = """You are the lab's executor team: {experts}.
+Write one complete Python script that carries out this approved analysis plan.
+
+{plan}
+
+The data is {data}; its dictionary:
+{dictionary}
+
+Requirements:
+- Use only pandas, numpy, scipy, lifelines and matplotlib (Agg backend). No network access.
+- Save {out}/results.json: {{"primary": {{"description", "n", "events", "hr", "ci_low", "ci_high", "p", \
+"covariates"}}, "secondary": [same fields], "checks": [strings, e.g. proportional hazards], "notes": string}}.
+- Save {out}/km.png: labelled Kaplan-Meier curves for the primary comparison with the log-rank p.
+- Save {out}/summary.md: at most 150 words on what the data shows, with the numbers, written by the script.
+- Compute and save the primary analysis first. Wrap each secondary analysis and check in try/except so a
+  failure there is recorded in "notes" and never stops the script. Convert numpy types before json.dump.
+- Print the primary result at the end. Keep the script under 120 lines.
+Reply with only the script in one ```python block."""
+
+RUNNER_PROMPT = """Run `python3 {script}` (it reads {data} and writes to {out}). If it fails, make the \
+smallest fix to {script} and run it again; do not change the analysis. As soon as it succeeds, reply with \
+the last line it printed and nothing else. Do not inspect or print the output files."""
 
 SYNTHESIS_PROMPT = """You are the lead PI writing the lab's final answer for the researcher.
 
