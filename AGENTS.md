@@ -3,12 +3,12 @@
 A team of 20+ AI agents that answers a research question the way a real lab would: learn the topic,
 plan in meetings, critique, check feasibility, get human approval, run code on real data, then
 prove the answer beats a single-model baseline in a blind test. Inspired by Swanson et al.,
-"The Virtual Lab" (Nature, 2025). Extends our pre-event prototype; see README for the old/new split.
+"The Virtual Lab" (Nature, 2025). Rebuilds our pre-event prototype's design from scratch; see README.
 
 ## Hackathon rules that shape the code
 
-- Repo must be **public**; demo must show **only what we built today**. We extend a pre-event prototype, so keep
-  prototype commits (original dates) separate from 2026-10-25 commits and keep the README old/new list current.
+- Repo must be **public**; demo must show **only what we built today**. A pre-event prototype exists; we reuse
+  its design only, never its code. Keep the README "built today" list current.
 - Banned: Streamlit apps, basic RAG, projects where a **dashboard is the main feature**, and
   **AI that generates medical advice**. So: no Streamlit (FastAPI + one HTML page); the live view is a
   window onto the agents, not the product; frame questions as **research** questions for a scientist

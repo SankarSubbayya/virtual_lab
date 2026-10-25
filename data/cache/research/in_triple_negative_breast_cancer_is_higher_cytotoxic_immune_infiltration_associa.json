@@ -1,0 +1,29 @@
+{
+  "summary": "In triple-negative breast cancer (TNBC), cytotoxic immune infiltration\u2014predominantly mediated by CD8+ cytotoxic T lymphocytes and the cytotoxic effector molecule granzyme B (GZMB)\u2014is a established, favorable biomarker for overall survival (OS). Multivariate Cox proportional hazards models adjusting for standard clinical confounders (patient age, tumor stage/size, nodal status, and histologic grade) consistently show that high CD8+ and GZMB+ infiltration independently predicts prolonged OS and lower recurrence hazards.\n\nWhile generalized stromal tumor-infiltrating lymphocytes (sTILs) reflect gross tumor immunogenicity, interrogating CD8 and GZMB specifically evaluates functional, cytolytically active immunity. CD8 marks the density of infiltrating T cells, whereas GZMB expression distinguishes active, lethal effector T and natural killer (NK) cells from exhausted phenotypes. Studies evaluating GZMB-positive lymphocytes in TNBC reveal that even within CD8-infiltrated or PD-L1-positive subsets, robust GZMB expression provides significant additional prognostic stratification, conferring reduced risk of mortality independent of age, stage, or grade. These findings highlight CD8 and GZMB as key multidimensional biomarkers for immune competence, risk stratification, and patient selection for immunotherapy in TNBC.",
+  "sources": [
+    {
+      "title": "Tumor-Infiltrating Lymphocytes in Triple-Negative Breast Cancer",
+      "where": "JAMA, 2024",
+      "finding": "Each 10% increment in TIL abundance was independently associated with improved overall survival in TNBC after adjusting for age, tumor size, nodal status, and histologic grade.",
+      "id": "E-010"
+    },
+    {
+      "title": "Granzyme B Expression in the Tumor Microenvironment as a Prognostic Biomarker for Patients with Triple-Negative Breast Cancer",
+      "where": "Cancers, 2023",
+      "finding": "Infiltration of GZMB-high immune cells independently predicted significantly longer overall survival in multivariate analysis adjusting for baseline clinical factors.",
+      "id": "E-011"
+    },
+    {
+      "title": "Characterization of tumor-infiltrating lymphocytes and their spatial distribution in triple-negative breast cancer",
+      "where": "Breast Cancer Research, 2024",
+      "finding": "A cytotoxic infiltrate score incorporating CD8 and GZMB expression independently predicted survival outcomes after controlling for clinicopathological features.",
+      "id": "E-012"
+    },
+    {
+      "title": "Tumor-Infiltrating CD8+ Lymphocytes Predict Clinical Outcome in Breast Cancer",
+      "where": "Journal of Clinical Oncology, 2011",
+      "finding": "CD8+ cytotoxic T-cell infiltration is an independent favorable prognostic factor for breast cancer survival after adjusting for age, grade, and tumor stage.",
+      "id": "E-013"
+    }
+  ]
+}

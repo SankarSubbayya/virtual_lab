@@ -1,0 +1,37 @@
+{
+  "id": "L-002",
+  "topic": "tumor immunology",
+  "lesson": "Effective antitumor immunity in triple-negative breast cancer (TNBC) is driven by intraepithelial CD103+ tissue-resident memory CD8+ T cells, an activated effector population co-expressing cytolytic granules and immune checkpoints (PD-1, LAG-3) that correlates with favorable prognosis [E-005]. For effective tumor clearance, cytotoxic CD8+ T cells must directly mix within the tumor parenchyma rather than remaining compartmentalized [E-006]. However, localized immunosuppressive myeloid populations, PD-L1/IDO gradients [E-006], and peritumoral TGF-beta activation paired with dense extracellular matrix barriers trap CD8+ T cells within the stroma, establishing an immune-excluded phenotype that prevents direct intraepithelial target killing [E-007]. \n\nGenomically, homologous recombination deficiency and BRCA inactivation generate elevated mutational and neoantigen burdens that drive cytotoxic lymphocyte infiltration [E-008]. In response, tumors deploy compensatory evasion mechanisms, including checkpoint upregulation, disruption of antigen-processing machinery [E-008], and genomic HLA class I loss of heterozygosity (HLA-I LOH), which impairs neoantigen presentation and blunts cytotoxic surveillance despite high mutation loads [E-009].\n\nKey facts:\n* Intraepithelial CD103+ tissue-resident memory CD8+ T cells co-expressing cytolytic machinery alongside PD-1 and LAG-3 define the activated effector subset driving cytotoxic efficacy and improved survival in TNBC [E-005].\n* Efficient immune clearance requires CD8+ T cells to mix within tumor parenchyma, whereas localized immunosuppressive myeloid subsets, PD-L1/IDO gradients [E-006], and TGF-beta-driven extracellular matrix barriers sequester T cells in the stroma to form an immune-excluded state [E-007].\n* BRCA deficiency and homologous recombination defects produce high neoantigen burdens that recruit cytotoxic lymphocytes, prompting compensatory immune evasion via checkpoint induction and defective antigen processing [E-008].\n* Genomic loss of heterozygosity in HLA class I (HLA-I LOH) acts as a primary tumor-intrinsic escape mechanism that disrupts neoantigen presentation and inhibits cytotoxic T-cell surveillance even in hypermutated, DNA repair-deficient TNBC [E-009].",
+  "sources": [
+    {
+      "id": "E-005",
+      "title": "Single-cell profiling of breast cancer T cells reveals a tissue-resident memory subset associated with improved prognosis",
+      "where": "Nature Medicine, 2018",
+      "finding": "Intraepithelial CD103+ tissue-resident memory CD8+ T cells co-express cytolytic granules and immune checkpoints (such as PD-1 and LAG-3), biologically defining the activated effector population that drives cytotoxic efficacy and favorable prognosis in triple-negative breast cancer."
+    },
+    {
+      "id": "E-006",
+      "title": "A Structured Tumor-Immune Microenvironment in Triple-Negative Breast Cancer Revealed by Multiplexed Ion Beam Imaging",
+      "where": "Cell, 2018",
+      "finding": "High-dimensional spatial imaging demonstrates that effective antitumor immunity in triple-negative breast cancer requires cytotoxic CD8+ T cells to mix directly within tumor parenchyma rather than being compartmentalized along the margins by localized immunosuppressive myeloid populations and PD-L1/IDO expression gradients."
+    },
+    {
+      "id": "E-007",
+      "title": "Spatially distinct tumor immune microenvironments stratify triple-negative breast cancers",
+      "where": "The Journal of Clinical Investigation, 2019",
+      "finding": "Spatial mapping indicates that local TGF-beta activation and dense extracellular matrix barriers trap cytotoxic CD8+ T cells within the peritumoral stroma, driving an immune-excluded phenotype that impedes direct intraepithelial infiltration and target killing."
+    },
+    {
+      "id": "E-008",
+      "title": "Genomic Signatures Predict the Immunogenicity of BRCA-Deficient Breast Cancer",
+      "where": "Clinical Cancer Research, 2019",
+      "finding": "Homologous recombination deficiency and BRCA inactivation generate elevated mutational and neoantigen burdens that drive cytotoxic lymphocyte infiltration, whereas compensatory immune evasion emerges through checkpoint upregulation and disruption of antigen-processing machinery."
+    },
+    {
+      "id": "E-009",
+      "title": "Integrated analysis reveals prognostic value of HLA-I LOH in triple-negative breast cancer",
+      "where": "Journal for ImmunoTherapy of Cancer, 2021",
+      "finding": "Genomic loss of heterozygosity in HLA class I molecules serves as a primary tumor-intrinsic escape mechanism that impairs neoantigen presentation and blunts cytotoxic T-cell-mediated surveillance, even in triple-negative breast cancers with defective DNA repair and high mutation loads."
+    }
+  ]
+}

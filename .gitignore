@@ -16,3 +16,5 @@ runs/
 
 # Reference material from the pre-hackathon prototype (not our hackathon work; keep out of the public repo)
 VirtualLab*.pdf
+data/*.csv
+data/cache/sandbox.json

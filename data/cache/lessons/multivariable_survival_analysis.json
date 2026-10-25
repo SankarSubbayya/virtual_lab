@@ -1,0 +1,31 @@
+{
+  "id": "L-001",
+  "topic": "multivariable survival analysis",
+  "lesson": "Cox proportional hazards regression serves as the standard multivariable approach in prognostic research [E-001]. Model validity requires evaluating the proportional hazards (PH) assumption using scaled Schoenfeld residuals; violations are handled using stratified Cox models or time-varying coefficient models [E-001, E-003]. To prevent model overfitting, estimation bias, and inflated type I error, models must maintain adequate events per variable (EPV) [E-001, E-002]. While 10 to 20 EPV is the standard benchmark, an EPV between 5 and 9 can be acceptable under certain conditions if key confounders are adequately controlled [E-002]. Because categorical covariates such as stage and grade utilize indicator coding, each category consumes degrees of freedom and requires a proportional increase in observed events [E-001, E-002]. Furthermore, REMARK guidelines advise against data-driven categorization of continuous variables [E-001]. Continuous predictors and markers should retain their continuous scale, using restricted cubic splines or fractional polynomials to accommodate non-linear functional forms without information loss or misclassification [E-001, E-004].\n\nKey facts:\n* The proportional hazards assumption must be verified using scaled Schoenfeld residuals, and any violations should be addressed via stratified Cox models or time-varying coefficient models [E-001, E-003].\n* While 10 to 20 events per variable (EPV) is standard to prevent severe bias and inflated type I error, an EPV of 5 to 9 can be acceptable under specific conditions if key confounders are adequately controlled [E-001, E-002].\n* Continuous predictors should avoid data-driven cutpoints and instead be modeled continuously using fractional polynomials or restricted cubic splines to prevent information loss [E-001, E-004].\n* Categorical covariates, such as stage and grade, require indicator coding across levels, where each indicator consumes degrees of freedom and demands proportional increases in total event counts [E-001, E-002].",
+  "sources": [
+    {
+      "id": "E-001",
+      "title": "Reporting Recommendations for Tumor Marker Prognostic Studies (REMARK): Explanation and Elaboration",
+      "where": "PLoS Medicine, 2012",
+      "finding": "Provides consensus guidelines stipulating that multivariable survival models must specify candidate variables, evaluate and address proportional hazards assumptions, preserve continuous marker data rather than using data-driven cutpoints, and ensure adequate event counts to avoid overfitting."
+    },
+    {
+      "id": "E-002",
+      "title": "Relaxing the Rule of Ten Events per Variable in Logistic and Cox Regression",
+      "where": "American Journal of Epidemiology, 2007",
+      "finding": "Demonstrates that while 10 to 20 events per variable (EPV) is standard to prevent severe bias and inflated type I error in Cox proportional hazards regression, EPV values between 5 and 9 can be acceptable under certain conditions if key confounders are adequately controlled."
+    },
+    {
+      "id": "E-003",
+      "title": "Variables with Time-Varying Effects and the Cox Model: Some Statistical Concepts Illustrated with a Prognostic Factor Study in Breast Cancer",
+      "where": "BMC Medical Research Methodology, 2010",
+      "finding": "Details methodology for diagnosing non-proportional hazards using scaled Schoenfeld residuals and demonstrates handling violated assumptions via stratified Cox models or time-varying coefficient models."
+    },
+    {
+      "id": "E-004",
+      "title": "Selection of Important Variables and Determination of Functional Form for Continuous Predictors in Multivariable Model Building",
+      "where": "Statistics in Medicine, 2007",
+      "finding": "Establishes statistical frameworks for modeling continuous prognostic variables using fractional polynomials and restricted cubic splines to prevent information loss and misclassification induced by arbitrary categorizations."
+    }
+  ]
+}
