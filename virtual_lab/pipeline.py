@@ -10,7 +10,7 @@ import pandas as pd
 from . import agents as A
 from . import sandbox
 from .config import ARGON, CACHE_DIR, DATA_CSV, DATA_DICT, DEEP_RESEARCH, FLASH, GEMMA, LITE, MODES
-from .llm import ask, client, usage_of
+from .llm import ask, client, together, usage_of
 from .notebook import Run
 
 LESSONS = CACHE_DIR / "lessons"
@@ -194,7 +194,7 @@ async def planning_track(run: Run, t: str, question: str, knowledge: str, dictio
         return None
     for name in A.SPECIALISTS:
         run.handoff(f"PI_{t}", f"{name}_{t}", "agenda", lane=lane)
-    ideas = await asyncio.gather(*(
+    ideas = await together(*(
         ask(run, f"{name}_{t}", FLASH, A.SPECIALIST_PROMPT.format(track=track, kickoff=kickoff, dictionary=dictionary),
             system=f"{A.LAB_RULES}\n\n{role}", lane=lane)
         for name, role in A.SPECIALISTS.items()))
@@ -255,16 +255,22 @@ FILE_NOTES = {"results.json": "every estimate from the sandbox run", "summary.md
               "km.png": "Kaplan-Meier figure", "analysis.py": "the code that produced these numbers"}
 
 
-NOTES_HEADING = re.compile(r"^[ \t]*(?:#+[ \t]*)?\**[ \t]*Lab notes[ \t]*:?[ \t]*\**[ \t]*:?[ \t]*$", re.M | re.I)
-REFS_HEADING = re.compile(r"^[ \t]*(?:#+[ \t]*)?\**[ \t]*References[ \t]*:?[ \t]*\**[ \t]*:?[ \t]*$", re.M | re.I)
+HEADING = re.compile(r"^[ \t]*(?:#{1,6}[ \t]+(?P<atx>[^\n]*?)[ \t]*#*|\*\*(?P<bold>[^*\n]+)\*\*[ \t]*:?|"
+                     r"(?P<plain>Lab notes|References)[ \t]*:)[ \t]*$", re.M | re.I)
 
 
 def sections(answer: str) -> tuple[str, str]:
-    """(answer body, lab notes) with any reference list removed. Headings must sit on their own line."""
-    refs = list(REFS_HEADING.finditer(answer))
-    text = answer[:refs[-1].start()] if refs else answer
-    notes = NOTES_HEADING.search(text)
-    return (text[:notes.start()], text[notes.start():]) if notes else (text, "")
+    """Split the answer into (body, lab notes), dropping every References section and keeping all other
+    sections in order. A heading is a whole line: '## X', '## X ##', '**X**', '**X:**' or 'Lab notes:'."""
+    parts, name, last = [], "", 0
+    for m in HEADING.finditer(answer):
+        parts.append((name, answer[last:m.start()]))
+        name = (m.group("atx") or m.group("bold") or m.group("plain") or "").strip(" :#*").lower()
+        last = m.start()
+    parts.append((name, answer[last:]))
+    body = "".join(text for n, text in parts if n not in ("references", "lab notes"))
+    notes = "".join(text for n, text in parts if n == "lab notes")
+    return body, notes
 
 
 def references(run: Run, text: str, include: set[str] = frozenset()) -> str:
@@ -301,7 +307,7 @@ def for_judge(run: Run, answer: str) -> str:
 async def blind_test(run: Run, question: str, lab: str, baseline: str) -> list[str]:
     """Judge twice with the order swapped. One outcome per ordering: lab, baseline, tie or failed."""
     orders = [("lab_first", lab, baseline), ("baseline_first", baseline, lab)]
-    results = await asyncio.gather(*(
+    results = await together(*(
         ask(run, f"AnswerJudge_{n + 1}", ARGON, A.JUDGE_PROMPT.format(question=question, a=a, b=b),
             schema=A.JUDGE_SCHEMA, thinking="medium", lane="Judge")
         for n, (_, a, b) in enumerate(orders)))
@@ -364,7 +370,7 @@ async def _relay(run: Run, auto_approve: bool, tasks: list[asyncio.Task]):
         run.emit("final", text="Out of scope for a cancer research lab.", data={"answer": scope["reason"], "baseline": "",
                                                                                  "lab_wins": False, "files": []})
         return
-    sandbox_ready = spawn(sandbox.ensure(run))  # setup only (data + packages); analysis waits for approval
+    sandbox_ready = spawn(sandbox.wake(run))  # free: wakes the cached sandbox; paid setup waits for approval
     if scope and scope["kind"] == "patient_care":
         question = scope["research_question"]
         run.emit("agent_output", agent="ScopeGuard", text=(
@@ -385,7 +391,7 @@ async def _relay(run: Run, auto_approve: bool, tasks: list[asyncio.Task]):
 
     # 4. Planning meetings
     run.stage("Planning meetings (three teams in parallel)")
-    plans = await asyncio.gather(*(planning_track(run, t, question, knowledge, dictionary) for t in A.TRACKS))
+    plans = await together(*(planning_track(run, t, question, knowledge, dictionary) for t in A.TRACKS))
     merged = "\n\n".join(f"=== Plan from Track {t} ===\n{p}" for t, p in zip(A.TRACKS, plans) if p)
     for t in A.TRACKS:
         run.handoff(f"PI_{t}", "PI_Aggregator", f"plan_{t}")
@@ -414,10 +420,10 @@ async def _relay(run: Run, auto_approve: bool, tasks: list[asyncio.Task]):
     # 6. Doing the work: one attempt, plus one retry on a fresh sandbox within the remaining approved budget
     run.stage("Doing the work")
     experts, code = await prepared
-    env_id = await sandbox_ready
+    env_id = await sandbox_ready or await sandbox.create(run)
     work = await sandbox.execute(run, plan, experts, EXECUTOR_TOKEN_CAP, env_id, code) if env_id else sandbox.Execution()
     remaining = EXECUTOR_TOKEN_CAP - work.tokens
-    if not work.results and remaining > 50_000:
+    if not work.results and remaining > 50_000:  # one retry on a fresh sandbox, within what is left of the budget
         env_id = await sandbox.create(run)
         if env_id:
             work = await sandbox.execute(run, plan, experts, remaining, env_id, code)

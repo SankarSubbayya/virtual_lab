@@ -15,8 +15,16 @@ _client: genai.Client | None = None
 def client() -> genai.Client:
     global _client
     if _client is None:
-        _client = genai.Client()
+        # transport backstop (ms, per network operation); callers also enforce their own total deadlines
+        _client = genai.Client(http_options={"timeout": 300_000})
     return _client
+
+
+async def together(*coros) -> list:
+    """Run coroutines concurrently; if one raises, the rest are cancelled (no orphaned siblings)."""
+    async with asyncio.TaskGroup() as group:
+        tasks = [group.create_task(c) for c in coros]
+    return [t.result() for t in tasks]
 
 
 def usage_of(interaction) -> tuple[int, int]:

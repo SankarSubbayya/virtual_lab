@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -19,10 +20,20 @@ OUTPUTS = ["results.json", "summary.md", "km.png", "analysis.py"]
 FILE_TIMEOUT = 45  # seconds per upload/download
 SETUP_TIMEOUT = 300
 AGENT_TIMEOUT = {"fast": 240, "full": 900}
+RECONCILE_TIMEOUT = 15
+PRIMARY_NUMBERS = ("hr", "ci_low", "ci_high", "p")
 
 SETUP_PROMPT = f"""Run this shell command and reply with only the last line it prints:
 pip install -q --break-system-packages lifelines matplotlib pandas && mkdir -p {SANDBOX_OUT} && \
 python3 -c "import pandas as pd, lifelines; print('ready', pd.read_csv('{SANDBOX_DATA}').shape, 'lifelines', lifelines.__version__)\""""
+
+
+class SandboxError(RuntimeError):
+    """A failed sandbox attempt, carrying the tokens it consumed (or reserved, when unknown)."""
+
+    def __init__(self, message: str, tokens: int):
+        super().__init__(message)
+        self.tokens = tokens
 
 
 def workdir(run: Run) -> str:
@@ -30,28 +41,37 @@ def workdir(run: Run) -> str:
     return f"/workspace/runs/{run.id}"
 
 
-async def _file_call(fn, **kwargs):
-    return await asyncio.wait_for(asyncio.to_thread(fn, **kwargs), FILE_TIMEOUT)
+async def upload(env_id: str, path: str, data: bytes):
+    await asyncio.wait_for(client().aio.environments.files.upload(
+        environment=env_id, path=path, file=data, overwrite=True), FILE_TIMEOUT)
 
 
-async def ensure(run: Run) -> str | None:
-    """Return a sandbox with the data and packages installed, reusing a recent one when possible."""
-    if ENV_CACHE.exists():
-        cached = json.loads(ENV_CACHE.read_text())
-        if datetime.now() - datetime.fromisoformat(cached["created"]) < ENV_MAX_AGE:
-            try:  # wakes the snapshotted sandbox now, and fails fast if it has expired
-                await _file_call(client().environments.files.upload, environment=cached["id"],
-                                 path=f"{workdir(run)}/.wake", file=b"1", overwrite=True)
-            except Exception:
-                return await create(run)
-            run.emit("agent_output", agent="SandboxSetup", lane="Sandbox", model=ANTIGRAVITY,
-                     text=f"Reusing pre-warmed sandbox `{cached['id']}` (METABRIC + lifelines installed).")
-            return cached["id"]
-    return await create(run)
+async def fetch(env_id: str, path: str) -> bytes | None:
+    try:
+        return await asyncio.wait_for(client().aio.environments.files.download(environment=env_id, path=path),
+                                      FILE_TIMEOUT)
+    except Exception:
+        return None
+
+
+async def wake(run: Run) -> str | None:
+    """Wake the cached sandbox (a file upload, no model spend). None if there is none or it expired."""
+    if not ENV_CACHE.exists():
+        return None
+    cached = json.loads(ENV_CACHE.read_text())
+    if datetime.now() - datetime.fromisoformat(cached["created"]) >= ENV_MAX_AGE:
+        return None
+    try:
+        await upload(cached["id"], f"{workdir(run)}/.wake", b"1")
+    except Exception:
+        return None
+    run.emit("agent_output", agent="SandboxSetup", lane="Sandbox", model=ANTIGRAVITY,
+             text=f"Reusing pre-warmed sandbox `{cached['id']}` (METABRIC + lifelines installed).")
+    return cached["id"]
 
 
 async def create(run: Run) -> str | None:
-    """New sandbox: upload the cohort and install packages. Setup only; no analysis runs here."""
+    """New sandbox: upload the cohort and install packages (a paid agent call, so only after approval)."""
     run.emit("agent_start", agent="SandboxSetup", lane="Sandbox", model=ANTIGRAVITY)
     start = time.time()
     try:
@@ -71,6 +91,10 @@ async def create(run: Run) -> str | None:
         run.emit("error", agent="SandboxSetup", lane="Sandbox", text=f"{type(e).__name__}: {str(e)[:300]}")
         return None
     run.add_usage(*usage_of(interaction))
+    if interaction.status != "completed" or "ready" not in (interaction.output_text or ""):
+        run.emit("error", agent="SandboxSetup", lane="Sandbox",
+                 text=f"Sandbox setup did not finish (status {interaction.status}): {(interaction.output_text or '')[:200]}")
+        return None
     env_id = interaction.environment_id
     ENV_CACHE.parent.mkdir(parents=True, exist_ok=True)
     ENV_CACHE.write_text(json.dumps({"id": env_id, "created": datetime.now().isoformat()}))
@@ -93,9 +117,9 @@ async def write_code(run: Run, plan: str, experts: str) -> str | None:
 
 @dataclass
 class Execution:
-    files: dict[str, str] = field(default_factory=dict)  # output name -> catalogue ID, for files that exist
-    results: str = ""  # validated results.json text ("" if the run produced none)
-    tokens: int = 0  # sandbox tokens spent, counted against the approved budget
+    files: dict[str, str] = field(default_factory=dict)  # output name -> catalogue ID, for files on disk
+    results: str = ""  # validated results JSON ("" if the attempt produced none)
+    tokens: int = 0  # sandbox tokens consumed (or reserved), counted against the approved budget
     downloads: asyncio.Task | None = None  # resolves to the full {name: ID} once files are on disk
 
     async def all_files(self) -> dict[str, str]:
@@ -104,7 +128,8 @@ class Execution:
 
 async def execute(run: Run, plan: str, experts: str, max_tokens: int, env_id: str,
                   code: str | None = None) -> Execution:
-    """Run the approved plan in the sandbox. Never raises: a failed attempt returns empty results.
+    """Run the approved plan in the sandbox. Never raises (except cancellation): a failed attempt returns
+    an Execution with empty results and the tokens it used.
 
     With `code` (fast mode): upload it and the sandbox agent runs it, fixing only if it fails; the script
     prints its results on stdout, so synthesis can start while the files download in the background.
@@ -114,43 +139,60 @@ async def execute(run: Run, plan: str, experts: str, max_tokens: int, env_id: st
     out_dir, script = f"{base}/out", f"{base}/analysis.py"
     clean = f"First run `rm -rf {out_dir} && mkdir -p {out_dir}`.\n\n"
     paths = {name: f"{out_dir}/{name}" for name in OUTPUTS}
+    tokens = 0
     try:
         if code:
-            await _file_call(client().environments.files.upload, environment=env_id, path=script,
-                             file=code.encode(), overwrite=True)
+            await upload(env_id, script, code.encode())
             stdout, tokens = await _agent(run, clean + agents.RUNNER_PROMPT.format(
                 script=script, data=SANDBOX_DATA, out=out_dir), max_tokens, env_id, model=FLASH)  # runs Argon's script
             paths["analysis.py"] = script
         else:
             stdout, tokens = await _agent(run, clean + agents.EXECUTOR_PROMPT.format(
                 experts=experts, data=SANDBOX_DATA, dictionary=SANDBOX_DICT, plan=plan, out=out_dir), max_tokens, env_id)
+
+        files: dict[str, str] = {}
+        results = parse_results(stdout)
+        if results:  # keep the printed result as this run's results.json; the download will not replace it
+            run.write("sandbox/results.json", results)
+            files["results.json"] = run.add_source("file", "results.json", "sandbox/results.json", "Executor")
+            run.emit("tool", agent="Executor", lane="Sandbox", text=f"[{files['results.json']}] results.json",
+                     data={"kind": "file", "path": "sandbox/results.json"})
+        downloads = asyncio.create_task(download(run, env_id, paths, files))
+        if not results:  # nothing usable printed: use the downloaded file, validated the same way
+            on_disk = await downloads
+            if "results.json" in on_disk:
+                text = (run.dir / "sandbox" / "results.json").read_bytes().decode("utf-8", errors="replace")
+                results = validate_results(text)
+            files = dict(on_disk) if results else {}
+        return Execution(files, results, tokens, downloads)
+    except SandboxError as e:
+        run.emit("error", agent="Executor", lane="Sandbox", text=f"Sandbox attempt failed: {e}")
+        return Execution(tokens=e.tokens)
     except Exception as e:
         run.emit("error", agent="Executor", lane="Sandbox", text=f"Sandbox attempt failed: {type(e).__name__}: {str(e)[:300]}")
-        return Execution()
+        return Execution(tokens=tokens)
 
-    results = parse_results(stdout)
-    files = {"results.json": run.add_source("file", "results.json", "sandbox/results.json", "Executor")} if results else {}
-    downloads = asyncio.create_task(download(run, env_id, paths, files))
-    if not results:  # the script did not print its results: fall back to the downloaded file
-        on_disk = await downloads
-        if "results.json" in on_disk:
-            results = parse_results("RESULTS_JSON " + (run.dir / "sandbox" / "results.json").read_text().replace("\n", " "))
-        files = dict(on_disk)
-    return Execution(files, results, tokens, downloads)
+
+def validate_results(text: str) -> str:
+    """The results object re-serialized, if its primary result has finite HR, CI and p; else ""."""
+    try:
+        obj = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    primary = obj.get("primary") if isinstance(obj, dict) else None
+    if not isinstance(primary, dict):
+        return ""
+    for key in PRIMARY_NUMBERS:
+        value = primary.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+            return ""
+    return json.dumps(obj, indent=1)
 
 
 def parse_results(stdout: str) -> str:
-    """The last RESULTS_JSON line that decodes to an object with a primary result, re-serialized; else ""."""
-    for line in reversed(stdout.splitlines()):
-        if "RESULTS_JSON " not in line:
-            continue
-        try:
-            obj = json.loads(line.split("RESULTS_JSON ", 1)[1].strip())
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict) and isinstance(obj.get("primary"), dict):
-            return json.dumps(obj, indent=1)
-    return ""
+    """Validated results from the LAST RESULTS_JSON line only; "" (use the file) if that line is unusable."""
+    markers = [line for line in stdout.splitlines() if "RESULTS_JSON " in line]
+    return validate_results(markers[-1].split("RESULTS_JSON ", 1)[1].strip()) if markers else ""
 
 
 def _python_block(text: str) -> str:
@@ -161,11 +203,12 @@ def _python_block(text: str) -> str:
 async def _agent(run: Run, prompt: str, max_tokens: int, env_id: str, model: str = ARGON) -> tuple[str, int]:
     """One Antigravity interaction, streaming each code step to the live page. Returns (stdout, tokens).
 
-    Raises on a stream error, a stream that never completes, or the mode's deadline.
+    Raises SandboxError (with the tokens used, reconciled from the server or reserved in full when unknown)
+    on a stream error, a missing or non-completed terminal status, or the mode's deadline.
     """
     run.emit("agent_start", agent="Executor", lane="Sandbox", model=f"{ANTIGRAVITY} · {model}")
     start = time.time()
-    final_text, done = [], {}
+    final_text, seen = [], {}
 
     async def consume():
         stream = await client().aio.interactions.create(
@@ -178,7 +221,9 @@ async def _agent(run: Run, prompt: str, max_tokens: int, env_id: str, model: str
         )
         async for event in stream:
             kind = getattr(event, "event_type", "")
-            if kind == "step.start":
+            if kind == "interaction.created":
+                seen["id"] = event.interaction.id
+            elif kind == "step.start":
                 step = event.step.model_dump(exclude_none=True)
                 code = (step.get("arguments") or {}).get("code") or step.get("code")
                 if code:
@@ -188,14 +233,19 @@ async def _agent(run: Run, prompt: str, max_tokens: int, env_id: str, model: str
                 if delta.get("type") == "text":
                     final_text.append(delta.get("text", ""))
             elif kind == "interaction.completed":
-                done["interaction"] = event.interaction
+                seen["interaction"] = event.interaction
             elif kind == "error":
                 raise RuntimeError(f"stream error: {str(getattr(event, 'error', event))[:200]}")
 
-    await asyncio.wait_for(consume(), AGENT_TIMEOUT[run.mode])
-    interaction = done.get("interaction")
+    try:
+        await asyncio.wait_for(consume(), AGENT_TIMEOUT[run.mode])
+    except Exception as e:
+        tokens = await _reconcile(run, seen, max_tokens)
+        raise SandboxError(f"{type(e).__name__}: {str(e)[:250]}", tokens) from e
+
+    interaction = seen.get("interaction")
     if interaction is None:
-        raise RuntimeError("the sandbox agent stream ended without completing")
+        raise SandboxError("the sandbox agent stream ended without completing", await _reconcile(run, seen, max_tokens))
     tin, tout = usage_of(interaction)
     run.add_usage(tin, tout)
     outputs = []
@@ -209,26 +259,36 @@ async def _agent(run: Run, prompt: str, max_tokens: int, env_id: str, model: str
     run.emit("agent_output", agent="Executor", lane="Sandbox", model=f"{ANTIGRAVITY} · {model}",
              text="".join(final_text) or "(no summary)", ms=int((time.time() - start) * 1000), tokens=tin + tout,
              data={"status": interaction.status})
-    if interaction.status != "completed":  # outputs are still this attempt's own; execute() validates them
-        run.emit("error", agent="Executor", lane="Sandbox", text=f"Sandbox agent finished with status {interaction.status}")
+    if interaction.status != "completed":
+        raise SandboxError(f"sandbox agent finished with status {interaction.status}", tin + tout)
     return "\n".join(outputs), tin + tout
 
 
-async def download(run: Run, env_id: str, paths: dict[str, str], ids: dict[str, str]) -> dict[str, str]:
-    """Fetch the outputs into runs/<id>/sandbox/; catalogue each file that exists. Returns {name: ID}."""
-    async def fetch(path):
+async def _reconcile(run: Run, seen: dict, max_tokens: int) -> int:
+    """Tokens a failed interaction used: from its completion event, else from the server, else the full cap."""
+    interaction = seen.get("interaction")
+    if interaction is None and seen.get("id"):
         try:
-            return await _file_call(client().environments.files.download, environment=env_id, path=path)
+            interaction = await asyncio.wait_for(client().aio.interactions.get(id=seen["id"]), RECONCILE_TIMEOUT)
         except Exception:
-            return None
+            interaction = None
+    used = sum(usage_of(interaction)) if interaction is not None else 0
+    if interaction is not None and getattr(interaction, "usage", None):
+        run.add_usage(*usage_of(interaction))
+        return used
+    return max_tokens if seen.get("id") else 0  # started but unknown: reserve the whole allowance
 
-    found = {}
-    blobs = await asyncio.gather(*(fetch(path) for path in paths.values()))
-    for name, data in zip(paths, blobs):
+
+async def download(run: Run, env_id: str, paths: dict[str, str], have: dict[str, str]) -> dict[str, str]:
+    """Fetch outputs into runs/<id>/sandbox/ (keeping files already saved), cataloguing each that exists."""
+    wanted = {name: path for name, path in paths.items() if name not in have}
+    found = dict(have)
+    blobs = await asyncio.gather(*(fetch(env_id, path) for path in wanted.values()))
+    for name, data in zip(wanted, blobs):
         if data is None:
             continue
         run.write(f"sandbox/{name}", data)
-        found[name] = ids.get(name) or run.add_source("file", name, f"sandbox/{name}", "Executor")
+        found[name] = run.add_source("file", name, f"sandbox/{name}", "Executor")
         run.emit("tool", agent="Executor", lane="Sandbox", text=f"[{found[name]}] {name}",
                  data={"kind": "file", "path": f"sandbox/{name}"})
     return found
