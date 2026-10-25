@@ -289,12 +289,13 @@ Requirements:
 - Save {out}/summary.md: at most 150 words on what the data shows, with the numbers, written by the script.
 - Compute and save the primary analysis first. Wrap each secondary analysis and check in try/except so a
   failure there is recorded in "notes" and never stops the script. Convert numpy types before json.dump.
-- Print the primary result at the end. Keep the script under 120 lines.
+- As the very last line, print `RESULTS_JSON ` followed by json.dumps of the results dict on one line.
+  Keep the script under 120 lines.
 Reply with only the script in one ```python block."""
 
 RUNNER_PROMPT = """Run `python3 {script}` (it reads {data} and writes to {out}). If it fails, make the \
-smallest fix to {script} and run it again; do not change the analysis. As soon as it succeeds, reply with \
-the last line it printed and nothing else. Do not inspect or print the output files."""
+smallest fix to {script} and run it again; do not change the analysis. As soon as it succeeds, reply \
+with the single word: done. Do not inspect or print the output files."""
 
 SYNTHESIS_PROMPT = """You are the lead PI writing the lab's final answer for the researcher.
 
@@ -308,14 +309,20 @@ Published evidence and lessons:
 
 {draft}
 
-Write markdown with these headings: **Answer** (2-3 sentences, direct), **What the data shows** \
-(the numbers: n, events, HR with 95% CI and p, cite file IDs), **What published research says** \
-(cite E-/L- IDs), **What changed from the first draft**, **Limitations**. Label each claim as coming \
-from our data or from published evidence. No treatment or care advice. At most 450 words.{feedback}"""
+Write markdown with these headings, in this order:
+**Answer** (2-3 sentences, direct, with the key number).
+**What the data shows**: define the cohort and every score you report (which genes, how it was computed), \
+then the numbers: n, events, HR with 95% CI and p, and the model's adjustments; cite file IDs.
+**What published research says**: cite E- and L- IDs.
+**Limitations**.
+**Lab notes**: what changed from the first draft, in 2-3 bullets.
+Label each claim as from our data or from published evidence. Do not add a reference list (it is \
+appended automatically). No treatment or care advice. At most 450 words before Lab notes.{feedback}"""
 
 BASELINE_PROMPT = """{question}
 
-(A public cohort is available with these columns, for context:)
+Answer for the researcher as well as you can. You cannot run code or open files. For context, a public \
+cohort with these columns exists:
 {dictionary}"""
 
 JUDGE_SCHEMA = {

@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from . import agents
@@ -27,6 +28,11 @@ async def ensure(run: Run) -> str | None:
     if ENV_CACHE.exists():
         cached = json.loads(ENV_CACHE.read_text())
         if datetime.now() - datetime.fromisoformat(cached["created"]) < ENV_MAX_AGE:
+            try:  # wakes the snapshotted sandbox now, and fails fast if it has expired
+                await asyncio.to_thread(client().environments.files.upload, environment=cached["id"],
+                                        path="/workspace/run/.wake", file=b"1", overwrite=True)
+            except Exception:
+                return await create(run)
             run.emit("agent_output", agent="SandboxSetup", lane="Sandbox", model=ANTIGRAVITY,
                      text=f"Reusing pre-warmed sandbox `{cached['id']}` (METABRIC + lifelines installed).")
             return cached["id"]
@@ -61,30 +67,53 @@ async def create(run: Run) -> str | None:
     return env_id
 
 
-async def execute(run: Run, plan: str, experts: str, max_tokens: int, env_id: str) -> dict:
-    """Run the approved plan in the sandbox and download the outputs.
+async def write_code(run: Run, plan: str, experts: str) -> str | None:
+    """Fast mode: Argon writes the whole analysis.py in one call (runs while the approval card waits)."""
+    reply = await ask(run, "ExecutorCoder", ARGON, agents.CODER_PROMPT.format(
+        experts=experts, plan=plan, data=SANDBOX_DATA, dictionary=DATA_DICT.read_text(), out=SANDBOX_OUT),
+        system=agents.LAB_RULES, thinking="low", lane="Sandbox",
+        show="Wrote `analysis.py` for the sandbox (code below). It runs only after approval.")
+    code = _python_block(reply or "")
+    if code:
+        run.emit("tool", agent="ExecutorCoder", lane="Sandbox", text=code, data={"kind": "code"})
+    return code or None
 
-    Fast mode: Argon writes analysis.py in one call, we upload it, and the sandbox agent runs it (fixing
-    only if it fails). Full mode: the sandbox agent on Argon writes, runs and iterates on its own.
+
+@dataclass
+class Execution:
+    files: dict[str, str]  # output name -> catalogue ID
+    results: str  # results.json text ("" if the run produced none)
+    downloads: asyncio.Task  # resolves to {name: ID} for the files now in runs/<id>/sandbox/
+
+
+async def execute(run: Run, plan: str, experts: str, max_tokens: int, env_id: str,
+                  code: str | None = None) -> Execution:
+    """Run the approved plan in the sandbox.
+
+    With `code` (fast mode): upload it and the sandbox agent runs it, fixing only if it fails; the script
+    prints its results on stdout, so synthesis can start while the files download in the background.
+    Without (full mode): the sandbox agent on Argon writes, runs and iterates on its own.
     """
-    if run.mode == "fast":
-        reply = await ask(run, "ExecutorCoder", ARGON, agents.CODER_PROMPT.format(
-            experts=experts, plan=plan, data=SANDBOX_DATA, dictionary=DATA_DICT.read_text(), out=SANDBOX_OUT),
-            system=agents.LAB_RULES, thinking="low", lane="Sandbox",
-            show="Wrote `analysis.py` for the sandbox (code below).")
-        code = _python_block(reply or "")
-        if code:
-            run.emit("tool", agent="ExecutorCoder", lane="Sandbox", text=code, data={"kind": "code"})
-            await asyncio.to_thread(client().environments.files.upload, environment=env_id, path=SCRIPT,
-                                    file=code.encode(), overwrite=True)
-            prompt = f"First run `rm -rf {SANDBOX_OUT} && mkdir -p {SANDBOX_OUT}`.\n\n" + agents.RUNNER_PROMPT.format(
-                script=SCRIPT, data=SANDBOX_DATA, out=SANDBOX_OUT)
-            await _agent(run, prompt, max_tokens, env_id)
-            return await download(run, env_id, extra={"analysis.py": SCRIPT})
-    prompt = f"First run `rm -rf {SANDBOX_OUT} && mkdir -p {SANDBOX_OUT}`.\n\n" + agents.EXECUTOR_PROMPT.format(
-        experts=experts, data=SANDBOX_DATA, dictionary=SANDBOX_DICT, plan=plan, out=SANDBOX_OUT)
-    await _agent(run, prompt, max_tokens, env_id)
-    return await download(run, env_id)
+    clean = f"First run `rm -rf {SANDBOX_OUT} && mkdir -p {SANDBOX_OUT}`.\n\n"
+    paths = {name: f"{SANDBOX_OUT}/{name}" for name in OUTPUTS}
+    if code:
+        await asyncio.to_thread(client().environments.files.upload, environment=env_id, path=SCRIPT,
+                                file=code.encode(), overwrite=True)
+        stdout = await _agent(run, clean + agents.RUNNER_PROMPT.format(script=SCRIPT, data=SANDBOX_DATA, out=SANDBOX_OUT),
+                              max_tokens, env_id, model=FLASH)  # only runs Argon's script
+        paths["analysis.py"] = SCRIPT
+    else:
+        stdout = await _agent(run, clean + agents.EXECUTOR_PROMPT.format(
+            experts=experts, data=SANDBOX_DATA, dictionary=SANDBOX_DICT, plan=plan, out=SANDBOX_OUT), max_tokens, env_id)
+
+    ids = {name: run.add_source("file", name, f"sandbox/{name}", "Executor") for name in paths}
+    downloads = asyncio.create_task(download(run, env_id, paths, ids))
+    found = re.search(r"RESULTS_JSON (\{.*\})", stdout)
+    if found:
+        return Execution(ids, found.group(1), downloads)
+    on_disk = await downloads
+    results = (run.dir / "sandbox" / "results.json").read_text() if "results.json" in on_disk else ""
+    return Execution(ids, results, downloads)
 
 
 def _python_block(text: str) -> str:
@@ -92,14 +121,14 @@ def _python_block(text: str) -> str:
     return (m.group(1) if m else text).strip()
 
 
-async def _agent(run: Run, prompt: str, max_tokens: int, env_id: str):
-    """One Antigravity interaction on Argon, streaming each code step to the live page."""
-    run.emit("agent_start", agent="Executor", lane="Sandbox", model=f"{ANTIGRAVITY} · {ARGON}")
+async def _agent(run: Run, prompt: str, max_tokens: int, env_id: str, model: str = ARGON):
+    """One Antigravity interaction, streaming each code step to the live page."""
+    run.emit("agent_start", agent="Executor", lane="Sandbox", model=f"{ANTIGRAVITY} · {model}")
     start = time.time()
     final_text, interaction = [], None
     stream = await client().aio.interactions.create(
         agent=ANTIGRAVITY,
-        agent_config={"type": "antigravity", "model": ARGON, "max_total_tokens": max_tokens},
+        agent_config={"type": "antigravity", "model": model, "max_total_tokens": max_tokens},
         system_instruction=agents.LAB_RULES,
         input=prompt,
         environment=env_id,
@@ -119,7 +148,7 @@ async def _agent(run: Run, prompt: str, max_tokens: int, env_id: str):
         elif kind == "interaction.completed":
             interaction = event.interaction
 
-    tokens = 0
+    tokens, outputs = 0, []
     if interaction is not None:
         tin, tout = usage_of(interaction)
         run.add_usage(tin, tout)
@@ -129,16 +158,17 @@ async def _agent(run: Run, prompt: str, max_tokens: int, env_id: str):
             if s.get("type", "").endswith("_result"):
                 out = s.get("result") or s.get("output") or s.get("content")
                 if out:
+                    outputs.append(str(out))
                     run.emit("tool", agent="Executor", lane="Sandbox", text=str(out)[:2000], data={"kind": "output"})
-    run.emit("agent_output", agent="Executor", lane="Sandbox", model=f"{ANTIGRAVITY} · {ARGON}",
+    run.emit("agent_output", agent="Executor", lane="Sandbox", model=f"{ANTIGRAVITY} · {model}",
              text="".join(final_text) or "(no summary)", ms=int((time.time() - start) * 1000), tokens=tokens,
              data={"status": getattr(interaction, "status", None)})
+    return "\n".join(outputs)
 
 
-async def download(run: Run, env_id: str, extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Fetch the executor's outputs into runs/<id>/sandbox/ and catalogue them. Returns {name: F-id}."""
+async def download(run: Run, env_id: str, paths: dict[str, str], ids: dict[str, str]) -> dict[str, str]:
+    """Fetch the executor's outputs into runs/<id>/sandbox/. Returns {name: ID} for the files found."""
     found = {}
-    paths = {name: f"{SANDBOX_OUT}/{name}" for name in OUTPUTS} | (extra or {})
 
     async def fetch(path):
         try:
@@ -151,7 +181,7 @@ async def download(run: Run, env_id: str, extra: dict[str, str] | None = None) -
         if data is None:
             continue
         run.write(f"sandbox/{name}", data)
-        found[name] = run.add_source("file", name, f"sandbox/{name}", "Executor")
+        found[name] = ids[name]
         run.emit("tool", agent="Executor", lane="Sandbox", text=f"[{found[name]}] {name}",
                  data={"kind": "file", "path": f"sandbox/{name}"})
     return found

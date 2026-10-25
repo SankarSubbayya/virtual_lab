@@ -249,13 +249,41 @@ async def get_approval(run: Run, plan: str, auto: bool) -> bool:
     return approved
 
 
+# 6b. The answer the researcher gets ---------------------------------------------------------------------
+
+FILE_NOTES = {"results.json": "every estimate from the sandbox run", "summary.md": "the executor's summary",
+              "km.png": "Kaplan-Meier figure", "analysis.py": "the code that produced these numbers"}
+
+
+def with_references(run: Run, answer: str) -> str:
+    """Append a reference list for every catalogue ID the answer cites."""
+    cited = set(re.findall(r"\b[ELF]-\d{3}\b", answer))
+    refs = []
+    for c in run.catalog:
+        if c["id"] not in cited:
+            continue
+        if c["kind"] == "file":
+            refs.append(f"- [{c['id']}] `{c['title']}`: {FILE_NOTES.get(c['title'], 'sandbox output')} (run folder)")
+        elif c["kind"] == "lesson":
+            refs.append(f"- [{c['id']}] Team lesson: {c['title']} (built from the sources above)")
+        else:
+            refs.append(f"- [{c['id']}] {c['title']}. {c['source']}")
+    return answer.rstrip() + ("\n\n**References**\n" + "\n".join(refs) if refs else "")
+
+
+def for_judge(answer: str) -> str:
+    """The judge sees the answer to the question, not the lab's process notes (the baseline has none either)."""
+    return re.split(r"\n\**Lab notes\**", answer)[0].rstrip() + (
+        "\n\n" + answer[answer.index("**References**"):] if "**References**" in answer else "")
+
+
 # 7. The blind test -------------------------------------------------------------------------------------
 
 async def blind_test(run: Run, question: str, lab: str, baseline: str) -> list[str]:
     orders = [("lab_first", lab, baseline), ("baseline_first", baseline, lab)]
     results = await asyncio.gather(*(
         ask(run, f"AnswerJudge_{n + 1}", ARGON, A.JUDGE_PROMPT.format(question=question, a=a, b=b),
-            schema=A.JUDGE_SCHEMA, thinking="low", lane="Judge")
+            schema=A.JUDGE_SCHEMA, thinking="medium", lane="Judge")
         for n, (_, a, b) in enumerate(orders)))
     winners = []
     for n, ((order, _, _), r) in enumerate(zip(orders, results)):
@@ -322,9 +350,15 @@ async def run_lab(run: Run, auto_approve: bool = False):
     run.stage("Checks and approval")
     plan = await check_feasibility(run, plan, dictionary)
     run.set("final_plan", plan)
-    team = asyncio.create_task(ask(run, "TeamFormationAgent", FLASH, A.TEAM_PROMPT.format(plan=plan), schema=A.TEAM_SCHEMA))
+    async def prepare() -> tuple[str, str | None]:
+        """TeamFormation, then (fast mode) Argon writes the code, while the approval card waits."""
+        team = await ask(run, "TeamFormationAgent", FLASH, A.TEAM_PROMPT.format(plan=plan), schema=A.TEAM_SCHEMA)
+        experts = "; ".join(f"{e['role']} ({e['focus']})" for e in (team or {}).get("experts", [])) or "Survival Analyst"
+        return experts, (await sandbox.write_code(run, plan, experts) if run.mode == "fast" else None)
+
+    prepared = asyncio.create_task(prepare())
     if not await get_approval(run, plan, auto_approve):
-        team.cancel()
+        prepared.cancel()
         sandbox_ready.cancel()
         run.emit("final", text="Rejected at approval; nothing was run.",
                  data={"answer": "Plan rejected by the reviewer before any analysis ran.", "baseline": "",
@@ -333,27 +367,29 @@ async def run_lab(run: Run, auto_approve: bool = False):
 
     # 6. Doing the work
     run.stage("Doing the work")
-    experts = "; ".join(f"{e['role']} ({e['focus']})" for e in ((await team) or {}).get("experts", [])) or "Survival Analyst"
+    experts, code = await prepared
     env_id = await sandbox_ready
-    files = await sandbox.execute(run, plan, experts, EXECUTOR_TOKEN_CAP, env_id) if env_id else {}
-    if env_id and "results.json" not in files:  # stale sandbox or failed run: one retry on a fresh sandbox
+    work = await sandbox.execute(run, plan, experts, EXECUTOR_TOKEN_CAP, env_id, code) if env_id else None
+    if env_id and not (work and work.results):  # stale sandbox or failed run: one retry on a fresh sandbox
         env_id = await sandbox.create(run)
-        files = await sandbox.execute(run, plan, experts, EXECUTOR_TOKEN_CAP, env_id) if env_id else {}
+        work = await sandbox.execute(run, plan, experts, EXECUTOR_TOKEN_CAP, env_id, code) if env_id else None
+    files = work.files if work and work.results else {}
     draft = await draft_checked
-    results = "\n\n".join(f"[{fid}] {name}:\n{(run.dir / 'sandbox' / name).read_text()}"
-                          for name, fid in files.items() if name in ("results.json", "summary.md"))
+    results = f"[{files['results.json']}] results.json:\n{work.results}" if files else ""
     def synth_prompt(feedback: str = "") -> str:
         return A.SYNTHESIS_PROMPT.format(question=question, files=", ".join(files.values()) or "none",
-                                         results=results or "The analysis produced no results.",
+                                         results=(results or "The analysis produced no results.")
+                                         + f"\n\nThe approved plan these results come from:\n{plan}",
                                          knowledge=knowledge, draft=draft, feedback=feedback)
 
-    answer = await ask(run, "ExecutionSynthesisAgent", ARGON, synth_prompt(), system=A.LAB_RULES, thinking="medium")
+    answer = with_references(run, await ask(run, "ExecutionSynthesisAgent", ARGON, synth_prompt(),
+                                            system=A.LAB_RULES, thinking="medium") or "")
 
     # 7. The blind test
     run.stage("Blind test against Argon alone")
     sealed = await baseline or ""
     run.emit("agent_output", agent="BaselineAnswer", lane="Judge", text=sealed)
-    winners = await blind_test(run, question, answer, sealed)
+    winners = await blind_test(run, question, for_judge(answer), sealed)
     for _ in range(cfg["judge_retries"]):
         if "baseline" not in winners and "lab" in winners:
             break
@@ -361,13 +397,15 @@ async def run_lab(run: Run, auto_approve: bool = False):
         answer = await ask(run, "ExecutionSynthesisAgent", ARGON, synth_prompt(
             f"\n\nA reviewer preferred another answer. Fix these weaknesses: {reasons}"),
             system=A.LAB_RULES, thinking="medium") or answer
-        winners = await blind_test(run, question, answer, sealed)
+        answer = with_references(run, answer) if "**References**" not in answer else answer
+        winners = await blind_test(run, question, for_judge(answer), sealed)
 
     lab_wins = "lab" in winners and "baseline" not in winners
+    on_disk = await work.downloads if work else {}
     run.write("answer.md", answer or "")
     run.write("baseline.md", sealed)
     run.set("answer", answer)
     run.emit("final", text="Lab wins the blind test" if lab_wins else "Lab does not beat the baseline",
              data={"answer": answer, "baseline": sealed, "lab_wins": lab_wins, "winners": winners,
-                   "files": [f"sandbox/{n}" for n in files], "elapsed_s": round(time.time() - start),
+                   "files": [f"sandbox/{n}" for n in on_disk], "elapsed_s": round(time.time() - start),
                    "tokens": run.tokens_in + run.tokens_out, "cost_usd": round(run.cost_usd, 2)})
