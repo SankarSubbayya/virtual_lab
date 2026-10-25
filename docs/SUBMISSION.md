@@ -43,6 +43,27 @@ research questions about patients in general, and it uses public data only.
   analysis and repairs it if it fails, under the token budget the human approved. Each run is isolated.
 - **Google Search grounding and Deep Research** find and cite the literature, saved as team knowledge.
 
+## Describe your use of Google products
+
+Virtual Lab runs entirely on Google’s Gemini platform, through the Gemini Interactions API (google-genai
+Python SDK):
+
+- **Gemini 4 Argon** is the lead scientist: it runs the three planning meetings, critiques each plan,
+  merges them, writes the analysis code, writes the final answer, and acts as the blind judge. It also
+  answers alone as the baseline the lab must beat.
+- **Gemini 3.8 Flash** plays the specialists (immunologist, statistician, computational biologist) and the
+  "school" that studies the topic, many calls in parallel. **Gemini 3.5 Flash-Lite** handles routing and
+  the safety guard. **Gemma 4 (31B)** writes a quick first draft that the lab later fact-checks.
+- **Gemini Managed Agents (Antigravity agent)** is the lab bench: a pre-warmed, Google-hosted sandbox
+  holding 1,980 patient records. Argon’s code is uploaded with the Environments file API and run there;
+  the agent repairs it if it fails. The budget a human approves is enforced as the agent’s
+  `max_total_tokens` cap, and each run gets its own isolated folder.
+- **Google Search grounding** and the **Deep Research agent** find and cite the published literature,
+  which the lab saves as reusable team knowledge.
+- **Gemini text-to-speech** (gemini-3.8-flash-tts) narrates our demo video.
+- We built it with Google’s official **Gemini API skill** (gemini-api-dev) loaded into our coding agents,
+  as the DeepMind builder guide recommends.
+
 ## What we built at the hackathon
 
 All of the code, written on October 25: the 28-agent relay on the Gemini Interactions API, the
