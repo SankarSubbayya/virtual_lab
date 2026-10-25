@@ -3,21 +3,29 @@
 The judges want a working demo with real inputs in under 3 minutes. Fast mode does it in about
 2.5 minutes, including your Approve click. Practise it twice before going on stage.
 
-## 30 minutes before
+## Any time before (do it now and forget it)
 
-1. Start the server from the repo folder and leave the terminal open:
+1. The server can start any time and stay up all day. It is running now. If the laptop restarts or the
+   terminal closes, start it again from the repo folder:
    ```bash
    cd ~/projects/virtual_lab
    uv run uvicorn virtual_lab.server:app --host 127.0.0.1 --port 8010
    ```
-   (Port 8000 is taken on this laptop by an old Gemma server; 8010 avoids it.)
-2. Open **http://127.0.0.1:8010** in Chrome, full screen (⌃⌘F), zoom 100%. It is laid out for 1920×1080.
-3. **Warm-up run** 10–15 minutes before your slot: click **Run** (Fast), Approve, let it finish. This
-   checks the API key and wakes the sandbox. (The sandbox sleeps after 15 idle minutes; a run wakes it
-   in the background, so a cold start costs nothing extra on stage, but the warm-up proves it works.)
-4. Open a **backup tab** with a finished run, which replays from disk even with no internet:
+   (Port 8000 is taken on this laptop by an old Gemma server; 8010 avoids it.) Check it with
+   http://127.0.0.1:8010 in a browser.
+2. Keep the laptop from sleeping: run `caffeinate -dims` in a spare terminal (Ctrl-C to stop).
+3. Open two Chrome tabs: **http://127.0.0.1:8010** (the live demo) and a **backup tab** with a finished
+   run, which replays from disk even with no internet:
    **http://127.0.0.1:8010/?run=20261025-125814-20bd** (153 s, lab wins 24–15 and 24–17).
-5. Have a phone hotspot ready in case the venue wifi drops.
+4. Have a phone hotspot ready in case the venue wifi drops.
+
+## 10–15 minutes before your slot (the only timed step)
+
+**Warm-up run:** click **Run** (Fast), Approve, let it finish. It proves, right before you present,
+that the API key and quota work and that the sandbox answers. (The sandbox sleeps after 15 idle
+minutes; the app wakes it automatically, but a recent successful run is the real check.) Then click
+**New run** so the page is clean, and put Chrome in full screen (⌃⌘F), zoom 100%; the page is laid out
+for 1920×1080.
 
 ## On stage (about 2.5 minutes)
 
