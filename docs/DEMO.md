@@ -48,7 +48,7 @@ Then one sentence on what you built today and the repo URL.
   question. It uses public data only.
 - **Is the blind test fair?** The baseline is Argon itself, given the same question and the same data
   description, told it cannot run code. The judge is blind, sees both orders, and the lab must win both.
-  It did in 8 of 9 runs; one split.
+  It did in 10 of 11 runs; one split.
 - **Why does this need Argon?** Argon leads: it runs the meetings, critiques, merges the plans, writes
   the analysis code, writes the answer and judges. Flash handles the leaf tasks in parallel (the
   orchestration pattern in the DeepMind builder guide).

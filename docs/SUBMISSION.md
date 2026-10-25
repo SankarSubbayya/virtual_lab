@@ -26,7 +26,7 @@ research says, with references. Finally a blind judge compares it with Gemini 4 
 twice, with the order swapped; the lab must win both.
 
 On our demo question (is more cytotoxic immune activity in triple-negative breast cancer linked to
-longer survival, after accounting for age, stage and grade?), the lab won 8 of 9 blind tests. It found
+longer survival, after accounting for age, stage and grade?), the lab won 10 of 11 blind tests. It found
 about a 20% lower risk of death per standard deviation of the immune score (hazard ratio 0.76–0.80 in
 every run), consistent with the literature. A run takes about 2.5 minutes and costs about $0.35.
 
