@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -59,10 +60,21 @@ def list_runs():
     return [p.parent.name for p in sorted(RUNS_DIR.glob("*/events.jsonl"), reverse=True)]
 
 
+RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
+
+
+def run_dir(run_id: str) -> Path:
+    """The run's folder, only if the id is well formed and the folder sits directly in runs/."""
+    base = (RUNS_DIR / run_id).resolve()
+    if not RUN_ID.match(run_id) or base.parent != RUNS_DIR.resolve():
+        raise HTTPException(404, "unknown run")
+    return base
+
+
 @app.get("/api/runs/{run_id}/events")
 async def events(run_id: str):
     run = runs.get(run_id)
-    log = RUNS_DIR / run_id / "events.jsonl"
+    log = run_dir(run_id) / "events.jsonl"
     if run is None and not log.exists():
         raise HTTPException(404, "unknown run")
 
@@ -84,7 +96,7 @@ async def _replay(log: Path):
 
 
 @app.post("/api/runs/{run_id}/approve")
-def approve(run_id: str, body: Decision):
+async def approve(run_id: str, body: Decision):  # async: resolves the run's future on its own event loop
     run = runs.get(run_id)
     if run is None or not run.resolve_approval(body.approved):
         raise HTTPException(409, "no approval pending for this run")
@@ -93,7 +105,7 @@ def approve(run_id: str, body: Decision):
 
 @app.get("/api/runs/{run_id}/files/{path:path}")
 def files(run_id: str, path: str):
-    base = (RUNS_DIR / run_id).resolve()
+    base = run_dir(run_id)
     target = (base / path).resolve()
     if not target.is_relative_to(base) or not target.is_file():
         raise HTTPException(404, "no such file")

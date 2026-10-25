@@ -255,12 +255,24 @@ FILE_NOTES = {"results.json": "every estimate from the sandbox run", "summary.md
               "km.png": "Kaplan-Meier figure", "analysis.py": "the code that produced these numbers"}
 
 
-def with_references(run: Run, answer: str) -> str:
-    """Append a reference list for every catalogue ID the answer cites."""
-    cited = set(re.findall(r"\b[ELF]-\d{3}\b", answer))
+NOTES_HEADING = re.compile(r"^[ \t]*(?:#+[ \t]*)?\**[ \t]*Lab notes[ \t]*:?[ \t]*\**[ \t]*:?[ \t]*$", re.M | re.I)
+REFS_HEADING = re.compile(r"^[ \t]*(?:#+[ \t]*)?\**[ \t]*References[ \t]*:?[ \t]*\**[ \t]*:?[ \t]*$", re.M | re.I)
+
+
+def sections(answer: str) -> tuple[str, str]:
+    """(answer body, lab notes) with any reference list removed. Headings must sit on their own line."""
+    refs = list(REFS_HEADING.finditer(answer))
+    text = answer[:refs[-1].start()] if refs else answer
+    notes = NOTES_HEADING.search(text)
+    return (text[:notes.start()], text[notes.start():]) if notes else (text, "")
+
+
+def references(run: Run, text: str, include: set[str] = frozenset()) -> str:
+    """A reference list for every catalogue ID cited in `text`, plus `include` (e.g. downloaded files)."""
+    wanted = set(re.findall(r"\b[ELF]-\d{3}\b", text)) | set(include)
     refs = []
     for c in run.catalog:
-        if c["id"] not in cited:
+        if c["id"] not in wanted:
             continue
         if c["kind"] == "file":
             refs.append(f"- [{c['id']}] `{c['title']}`: {FILE_NOTES.get(c['title'], 'sandbox output')} (run folder)")
@@ -268,18 +280,26 @@ def with_references(run: Run, answer: str) -> str:
             refs.append(f"- [{c['id']}] Team lesson: {c['title']} (built from the sources above)")
         else:
             refs.append(f"- [{c['id']}] {c['title']}. {c['source']}")
-    return answer.rstrip() + ("\n\n**References**\n" + "\n".join(refs) if refs else "")
+    return "\n\n**References**\n" + "\n".join(refs) if refs else ""
 
 
-def for_judge(answer: str) -> str:
-    """The judge sees the answer to the question, not the lab's process notes (the baseline has none either)."""
-    return re.split(r"\n\**Lab notes\**", answer)[0].rstrip() + (
-        "\n\n" + answer[answer.index("**References**"):] if "**References**" in answer else "")
+def with_references(run: Run, answer: str, include: set[str] = frozenset()) -> str:
+    """The researcher's answer: body, lab notes, then exactly one generated reference list."""
+    body, notes = sections(answer)
+    return (body.rstrip() + ("\n\n" + notes.strip() if notes else "")
+            + references(run, body + notes, include))
+
+
+def for_judge(run: Run, answer: str) -> str:
+    """What the judge sees: the answer and its references, without the lab's process notes (the baseline has none)."""
+    body, _ = sections(answer)
+    return body.rstrip() + references(run, body)
 
 
 # 7. The blind test -------------------------------------------------------------------------------------
 
 async def blind_test(run: Run, question: str, lab: str, baseline: str) -> list[str]:
+    """Judge twice with the order swapped. One outcome per ordering: lab, baseline, tie or failed."""
     orders = [("lab_first", lab, baseline), ("baseline_first", baseline, lab)]
     results = await asyncio.gather(*(
         ask(run, f"AnswerJudge_{n + 1}", ARGON, A.JUDGE_PROMPT.format(question=question, a=a, b=b),
@@ -288,6 +308,7 @@ async def blind_test(run: Run, question: str, lab: str, baseline: str) -> list[s
     winners = []
     for n, ((order, _, _), r) in enumerate(zip(orders, results)):
         if not r:
+            winners.append("failed")
             continue
         lab_is_a = order == "lab_first"
         winner = "tie" if r["winner"] == "tie" else ("lab" if (r["winner"] == "A") == lab_is_a else "baseline")
@@ -300,9 +321,35 @@ async def blind_test(run: Run, question: str, lab: str, baseline: str) -> list[s
     return winners
 
 
+def outcome(winners: list[str]) -> str:
+    """The lab wins only if it wins both orderings; the baseline likewise; anything else is a tie."""
+    if winners == ["lab", "lab"]:
+        return "lab"
+    if winners == ["baseline", "baseline"]:
+        return "baseline"
+    return "tie"
+
+
 # the whole relay ---------------------------------------------------------------------------------------
 
 async def run_lab(run: Run, auto_approve: bool = False):
+    """Run the relay; on any exit, cancel and drain the background tasks it started."""
+    tasks: list[asyncio.Task] = []
+    try:
+        await _relay(run, auto_approve, tasks)
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _relay(run: Run, auto_approve: bool, tasks: list[asyncio.Task]):
+    def spawn(coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        tasks.append(task)
+        return task
+
     cfg = MODES[run.mode]
     start = time.time()
     dictionary = DATA_DICT.read_text()
@@ -311,21 +358,21 @@ async def run_lab(run: Run, auto_approve: bool = False):
     run.stage("Getting started")
     run.set("original_request", run.question)
     run.emit("agent_output", agent="CaptureOriginalRequest", text=f"Saved the exact question:\n\n> {run.question}")
-    sandbox_ready = asyncio.create_task(sandbox.ensure(run))
     scope = await ask(run, "ScopeGuard", LITE, A.SCOPE_PROMPT.format(question=run.question), schema=A.SCOPE_SCHEMA)
     question = run.question
     if scope and scope["kind"] == "off_topic":
         run.emit("final", text="Out of scope for a cancer research lab.", data={"answer": scope["reason"], "baseline": "",
                                                                                  "lab_wins": False, "files": []})
         return
+    sandbox_ready = spawn(sandbox.ensure(run))  # setup only (data + packages); analysis waits for approval
     if scope and scope["kind"] == "patient_care":
         question = scope["research_question"]
         run.emit("agent_output", agent="ScopeGuard", text=(
             "This lab does not give care advice for an individual patient. It will answer the closest "
             f"research question instead:\n\n> {question}"))
     run.set("question", question)
-    initial = asyncio.create_task(ask(run, "InitialAnswer", GEMMA, question, system=A.LAB_RULES + " Answer from memory in under 200 words."))
-    baseline = asyncio.create_task(ask(run, "BaselineAnswer", ARGON, A.BASELINE_PROMPT.format(
+    initial = spawn(ask(run, "InitialAnswer", GEMMA, question, system=A.LAB_RULES + " Answer from memory in under 200 words."))
+    baseline = spawn(ask(run, "BaselineAnswer", ARGON, A.BASELINE_PROMPT.format(
         question=question, dictionary=dictionary), thinking="medium", show=False))
 
     # 2-3. School and fact-checking
@@ -334,7 +381,7 @@ async def run_lab(run: Run, auto_approve: bool = False):
     run.stage("Fact-checking")
     evidence = await fact_check(run, question, dictionary)
     knowledge = f"{lessons}\n\n{evidence}"
-    draft_checked = asyncio.create_task(check_draft(run, evidence, initial))
+    draft_checked = spawn(check_draft(run, evidence, initial))
 
     # 4. Planning meetings
     run.stage("Planning meetings (three teams in parallel)")
@@ -344,68 +391,78 @@ async def run_lab(run: Run, auto_approve: bool = False):
         run.handoff(f"PI_{t}", "PI_Aggregator", f"plan_{t}")
     plan = await ask(run, "PI_Aggregator", ARGON, A.AGGREGATOR_PROMPT.format(
         question=question, plans=merged, dictionary=dictionary, scope=cfg["plan_scope"]), system=A.LAB_RULES,
-        thinking="medium" if run.mode == "full" else "low")
+        thinking="medium" if run.mode == "full" else "low") or merged
 
     # 5. Checks and approval
     run.stage("Checks and approval")
     plan = await check_feasibility(run, plan, dictionary)
     run.set("final_plan", plan)
+
     async def prepare() -> tuple[str, str | None]:
         """TeamFormation, then (fast mode) Argon writes the code, while the approval card waits."""
         team = await ask(run, "TeamFormationAgent", FLASH, A.TEAM_PROMPT.format(plan=plan), schema=A.TEAM_SCHEMA)
         experts = "; ".join(f"{e['role']} ({e['focus']})" for e in (team or {}).get("experts", [])) or "Survival Analyst"
         return experts, (await sandbox.write_code(run, plan, experts) if run.mode == "fast" else None)
 
-    prepared = asyncio.create_task(prepare())
+    prepared = spawn(prepare())
     if not await get_approval(run, plan, auto_approve):
-        prepared.cancel()
-        sandbox_ready.cancel()
         run.emit("final", text="Rejected at approval; nothing was run.",
                  data={"answer": "Plan rejected by the reviewer before any analysis ran.", "baseline": "",
-                       "lab_wins": False, "files": []})
+                       "lab_wins": False, "winner": "tie", "files": []})
         return
 
-    # 6. Doing the work
+    # 6. Doing the work: one attempt, plus one retry on a fresh sandbox within the remaining approved budget
     run.stage("Doing the work")
     experts, code = await prepared
     env_id = await sandbox_ready
-    work = await sandbox.execute(run, plan, experts, EXECUTOR_TOKEN_CAP, env_id, code) if env_id else None
-    if env_id and not (work and work.results):  # stale sandbox or failed run: one retry on a fresh sandbox
+    work = await sandbox.execute(run, plan, experts, EXECUTOR_TOKEN_CAP, env_id, code) if env_id else sandbox.Execution()
+    remaining = EXECUTOR_TOKEN_CAP - work.tokens
+    if not work.results and remaining > 50_000:
         env_id = await sandbox.create(run)
-        work = await sandbox.execute(run, plan, experts, EXECUTOR_TOKEN_CAP, env_id, code) if env_id else None
-    files = work.files if work and work.results else {}
+        if env_id:
+            work = await sandbox.execute(run, plan, experts, remaining, env_id, code)
+    if work.downloads:
+        tasks.append(work.downloads)
+    files = work.files if work.results else {}
     draft = await draft_checked
-    results = f"[{files['results.json']}] results.json:\n{work.results}" if files else ""
+    results = f"[{files['results.json']}] results.json:\n{work.results}" if "results.json" in files else ""
+
     def synth_prompt(feedback: str = "") -> str:
         return A.SYNTHESIS_PROMPT.format(question=question, files=", ".join(files.values()) or "none",
                                          results=(results or "The analysis produced no results.")
                                          + f"\n\nThe approved plan these results come from:\n{plan}",
                                          knowledge=knowledge, draft=draft, feedback=feedback)
 
-    answer = with_references(run, await ask(run, "ExecutionSynthesisAgent", ARGON, synth_prompt(),
-                                            system=A.LAB_RULES, thinking="medium") or "")
+    answer = await ask(run, "ExecutionSynthesisAgent", ARGON, synth_prompt(), system=A.LAB_RULES, thinking="medium") or ""
 
-    # 7. The blind test
+    # 7. The blind test (needs a real baseline and a real answer)
     run.stage("Blind test against Argon alone")
     sealed = await baseline or ""
-    run.emit("agent_output", agent="BaselineAnswer", lane="Judge", text=sealed)
-    winners = await blind_test(run, question, for_judge(answer), sealed)
-    for _ in range(cfg["judge_retries"]):
-        if "baseline" not in winners and "lab" in winners:
-            break
-        reasons = " ".join(e["data"]["reason"] for e in run.events if e["type"] == "verdict")
-        answer = await ask(run, "ExecutionSynthesisAgent", ARGON, synth_prompt(
-            f"\n\nA reviewer preferred another answer. Fix these weaknesses: {reasons}"),
-            system=A.LAB_RULES, thinking="medium") or answer
-        answer = with_references(run, answer) if "**References**" not in answer else answer
-        winners = await blind_test(run, question, for_judge(answer), sealed)
+    run.emit("agent_output", agent="BaselineAnswer", lane="Judge", text=sealed or "(the baseline call failed)")
+    winners = []
+    if sealed and answer:
+        winners = await blind_test(run, question, for_judge(run, answer), sealed)
+        for _ in range(cfg["judge_retries"]):
+            if outcome(winners) == "lab":
+                break
+            reasons = " ".join(e["data"]["reason"] for e in run.events if e["type"] == "verdict")
+            answer = await ask(run, "ExecutionSynthesisAgent", ARGON, synth_prompt(
+                f"\n\nA reviewer preferred another answer. Fix these weaknesses: {reasons}"),
+                system=A.LAB_RULES, thinking="medium") or answer
+            winners = await blind_test(run, question, for_judge(run, answer), sealed)
+    else:
+        run.emit("error", lane="Judge", text="Blind test skipped: the lab answer or the baseline is missing.")
 
-    lab_wins = "lab" in winners and "baseline" not in winners
-    on_disk = await work.downloads if work else {}
-    run.write("answer.md", answer or "")
+    result = outcome(winners) if winners else "tie"
+    on_disk = await work.all_files()
+    answer = with_references(run, answer, include=set(on_disk.values()))
+    run.write("answer.md", answer)
     run.write("baseline.md", sealed)
     run.set("answer", answer)
-    run.emit("final", text="Lab wins the blind test" if lab_wins else "Lab does not beat the baseline",
-             data={"answer": answer, "baseline": sealed, "lab_wins": lab_wins, "winners": winners,
-                   "files": [f"sandbox/{n}" for n in on_disk], "elapsed_s": round(time.time() - start),
-                   "tokens": run.tokens_in + run.tokens_out, "cost_usd": round(run.cost_usd, 2)})
+    text = {"lab": "Lab wins the blind test (both orderings)", "baseline": "Argon alone wins the blind test",
+            "tie": "No clear winner: the judges split" if winners else "Blind test inconclusive"}[result]
+    run.emit("final", text=text,
+             data={"answer": answer, "baseline": sealed, "lab_wins": result == "lab", "winner": result,
+                   "winners": winners, "files": [f"sandbox/{n}" for n in on_disk],
+                   "elapsed_s": round(time.time() - start), "tokens": run.tokens_in + run.tokens_out,
+                   "cost_usd": round(run.cost_usd, 2)})

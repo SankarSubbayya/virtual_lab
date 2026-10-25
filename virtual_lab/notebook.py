@@ -48,14 +48,14 @@ class Run:
     async def stream(self):
         """Every event so far, then new ones until the run ends."""
         q: asyncio.Queue = asyncio.Queue()
-        backlog = list(self.events)
+        backlog, finished = list(self.events), self.done  # snapshot both before any await
         self._subscribers.append(q)
         try:
             for event in backlog:
                 yield event
-            if self.done:
+            if finished:
                 return
-            while (event := await q.get()) is not None:
+            while (event := await q.get()) is not None:  # drain to the end sentinel, even if the run ended meanwhile
                 if event["seq"] >= len(backlog):
                     yield event
         finally:
