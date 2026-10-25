@@ -15,7 +15,7 @@ the lab itself selects the 320 triple-negative cases (168 deaths).
 
 | | |
 |---|---|
-| Blind test (judged twice, order swapped, lab must win **both**) | **won 7 of 8 runs**; 1 split |
+| Blind test (judged twice, order swapped, lab must win **both**) | **won 8 of 9 runs**; 1 split |
 | Lab's finding, every run | HR **0.76–0.80** per SD of cytolytic score, 95% CI excluding 1, p = 0.002–0.012 |
 | Question to verdict, live with a human approval click | **150–198 s** (6 of 7 fast-mode runs under 3 minutes) |
 | Cost per run | about $0.35 (≈120k tokens) |
